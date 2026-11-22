@@ -56,6 +56,8 @@ The agent is in the `voice-agent` folder inside the unzipped folder
 2. Run the installer: `install.bat --no-pause` on Windows, `sh install.sh` on Mac. It creates
    `.venv`, installs the packages, and creates `.env`.
 3. Ask the user for their first name, then run `<python> setup_helper.py set OWNER_NAME <name>`.
+   If the user is in India, also set `CALL_LANGUAGE` to `en-IN` and `TTS_VOICE` to `Polly.Raveena`
+   (or `hi-IN` and `Polly.Aditi` if their callers mostly speak Hindi). Ask which they prefer.
 4. Ask whether callers should be told anything, such as when the user usually calls back. Add it
    to `agent_instructions.md` in plain sentences. Only include things the user is happy for any
    caller to hear.
@@ -90,9 +92,9 @@ the conversation. Offer to let them try it themselves: they run `<python> simula
 3. Get the trial number. On the Console home page, click **Get a phone number** (or go to
    **Phone Numbers → Manage → Buy a number**) and pick one with Voice. It's paid from the free trial
    credit. Don't upgrade the account.
-4. If the user doesn't live in the US, warn them before step 7 that calling a US number from their
-   phone may cost international rates. Ask whether that's OK. A local number may be possible, but
-   some countries ask for documents.
+4. Take a US number, which is the easiest to get on a trial. If the user doesn't live in the US
+   (for example in India), they shouldn't call it from their phone, because that's an
+   international call. In step 7, the agent calls them instead, and that's free for them.
 5. From the Console home page, save the Account SID and Auth Token:
    ```
    <python> setup_helper.py set TWILIO_ACCOUNT_SID <AC...>
@@ -119,8 +121,16 @@ ngrok gives the user's computer a public https address, so Twilio can reach the 
    `Your agent is running. Call +1... to talk to it.`
 2. In a second window, run `<python> setup_helper.py check`. Everything except **Call summaries**
    should say OK. Fix anything else it lists before going on.
-3. Ask the user to call the number from the phone they verified. They'll hear Twilio's trial
-   message, press any key, then talk to the agent. The agent's window shows `Incoming call`.
+3. Make the test call:
+   - **User outside the US (for example India):** run `<python> setup_helper.py test-call`. The
+     Twilio number calls the user's verified phone, which costs them nothing. They answer, press any
+     key after Twilio's trial message, and talk to the agent. If Twilio refuses because of geo
+     permissions, turn on their country in the Twilio Console under **Voice → Settings → Geo
+     permissions**, then try again.
+   - **User in the US:** ask them to call the Twilio number from the phone they verified, press any
+     key after the trial message, and talk.
+
+   The agent's window shows `Incoming call`.
 
 ## Step 8: Call summaries on Telegram (free)
 
@@ -146,7 +156,10 @@ Tell the user, briefly:
 - **Going live** (anyone can call, with missed calls forwarded from their phone) is paid: they upgrade
   Twilio, which costs about $1–2 a month for a US number plus roughly 10–15 cents for a two-minute call.
   They also dial a call-forwarding code on their phone (README.md, Part 4). Don't set this up unless
-  they ask.
+  they ask. **In India this is harder.** Forwarding an Indian mobile to a US number is an
+  international forward, which many Indian carriers block or charge for. Indian Twilio numbers
+  usually need business documents. So going live in India usually means a local Indian
+  cloud-telephony provider (paid, with KYC).
 
 ## If something goes wrong
 

@@ -250,3 +250,55 @@ def test_brain_ping_sends_a_tiny_request(tmp_path):
     asyncio.run(brain.ping())
     assert seen[0]["max_completion_tokens"] == 50
     assert seen[0]["messages"] == [{"role": "user", "content": "Reply with the word OK."}]
+
+
+# ---------------------------------------------------------------- test call (Twilio calls the user)
+
+from types import SimpleNamespace  # noqa: E402
+
+from app.setup_tools import place_test_call  # noqa: E402
+
+
+class CallingTwilio(FakeTwilio):
+    def __init__(self, numbers, verified, error=None):
+        super().__init__(numbers)
+        self.created = []
+        self.outgoing_caller_ids = SimpleNamespace(
+            list=lambda limit=None: [SimpleNamespace(phone_number=v) for v in verified][:limit]
+        )
+
+        def create(**kwargs):
+            if error:
+                raise error
+            self.created.append(kwargs)
+
+        self.calls = SimpleNamespace(create=create)
+
+
+def test_test_call_rings_the_only_verified_phone():
+    client = CallingTwilio([FakeNumber("+15550001234")], verified=["+919800000000"])
+    called = place_test_call(twilio_settings(), "https://abc.ngrok-free.app", client=client)
+    assert called == "+919800000000"
+    assert client.created == [{
+        "to": "+919800000000",
+        "from_": "+15550001234",
+        "url": "https://abc.ngrok-free.app/voice/incoming",
+        "method": "POST",
+        "status_callback": "https://abc.ngrok-free.app/voice/status",
+        "status_callback_method": "POST",
+    }]
+
+
+def test_test_call_needs_a_clear_target_and_explains_geo_permissions():
+    two = CallingTwilio([FakeNumber("+15550001234")], verified=["+919800000000", "+919800000001"])
+    with pytest.raises(SetupError, match="--to"):
+        place_test_call(twilio_settings(), "https://x.app", client=two)
+    assert place_test_call(twilio_settings(), "https://x.app", to="+91 98000 00001", client=two) == "+919800000001"
+
+    geo = TwilioRestException(status=400, uri="/Calls.json", code=21215,
+                              msg="Account not authorized to call +919800000000")
+    blocked = CallingTwilio([FakeNumber("+15550001234")], verified=["+919800000000"], error=geo)
+    with pytest.raises(SetupError, match="Geo permissions"):
+        place_test_call(twilio_settings(), "https://x.app", client=blocked)
+    with pytest.raises(SetupError, match="Start the agent"):
+        place_test_call(twilio_settings(), "", client=blocked)

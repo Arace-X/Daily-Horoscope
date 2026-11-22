@@ -3,6 +3,7 @@
     python setup_helper.py check                 # check everything, say what to fix next
     python setup_helper.py set KEY VALUE         # save a setting in .env, e.g. set GROQ_API_KEY gsk_...
     python setup_helper.py connect-twilio        # point your Twilio number at this agent
+    python setup_helper.py test-call             # have your Twilio number call your phone
     python setup_helper.py telegram-chat-id      # find and save your Telegram chat id
     python setup_helper.py test-notify           # send a test message to your summary channels
 """
@@ -19,6 +20,7 @@ from app.setup_tools import (
     SetupError,
     connect_twilio,
     ngrok_public_url,
+    place_test_call,
     run_checks,
     set_env_value,
     telegram_chat_id,
@@ -67,6 +69,16 @@ def cmd_connect_twilio(args) -> int:
     return 0
 
 
+def cmd_test_call(args) -> int:
+    settings = Settings.from_env()
+    port = int(os.getenv("PORT") or "8000")
+    url = (ngrok_public_url(port) or settings.public_base_url).rstrip("/")
+    called = place_test_call(settings, url, args.to)
+    print(f"Calling {called} now. Answer it, press any key after Twilio's trial message, "
+          "and talk to your agent.")
+    return 0
+
+
 def cmd_telegram_chat_id(_args) -> int:
     settings = Settings.from_env()
     if not settings.telegram_bot_token:
@@ -106,6 +118,9 @@ def main() -> int:
     p_tw = sub.add_parser("connect-twilio", help="point your Twilio number at this agent")
     p_tw.add_argument("--url", default="", help="public https address (default: the running ngrok address)")
     p_tw.set_defaults(run=cmd_connect_twilio)
+    p_call = sub.add_parser("test-call", help="have your Twilio number call your phone (start.py must be running)")
+    p_call.add_argument("--to", default="", help="phone to call (default: your verified number)")
+    p_call.set_defaults(run=cmd_test_call)
     sub.add_parser("telegram-chat-id", help="find and save your Telegram chat id").set_defaults(run=cmd_telegram_chat_id)
     sub.add_parser("test-notify", help="send a test summary message").set_defaults(run=cmd_test_notify)
 

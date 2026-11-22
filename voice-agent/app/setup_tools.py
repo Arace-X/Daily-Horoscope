@@ -142,6 +142,47 @@ def connect_twilio(settings: Settings, base_url: str, client=None) -> str:
     return number.phone_number
 
 
+def place_test_call(settings: Settings, base_url: str, to: str = "", client=None) -> str:
+    """Has the Twilio number call the user's phone and connect them to the agent.
+
+    Free to the user (paid from Twilio trial credit), unlike calling a US number from abroad.
+    `to` defaults to the account's only verified phone number. Returns the number called.
+    """
+    from twilio.base.exceptions import TwilioRestException
+
+    if not base_url.startswith("https://"):
+        raise SetupError("Start the agent first (start.py), so it has a public https address.")
+    client = client or twilio_client(settings)
+    number = find_twilio_number(client, settings.twilio_phone_number)
+    if number is None:
+        raise SetupError("No Twilio number found. Get a trial number in the Twilio Console first.")
+    to = to.replace(" ", "").replace("-", "")
+    try:
+        if not to:
+            verified = client.outgoing_caller_ids.list(limit=2)
+            if len(verified) != 1:
+                raise SetupError("Say which phone to call: setup_helper.py test-call --to +91XXXXXXXXXX")
+            to = verified[0].phone_number
+        voice_url, status_url = webhook_urls(base_url)
+        client.calls.create(
+            to=to,
+            from_=number.phone_number,
+            url=voice_url,
+            method="POST",
+            status_callback=status_url,
+            status_callback_method="POST",
+        )
+    except TwilioRestException as exc:
+        hint = ""
+        if exc.code in (21215, 13227) or "geo" in str(exc.msg).lower() or "permission" in str(exc.msg).lower():
+            hint = (" Turn on calls to your country in the Twilio Console: Voice > Settings > "
+                    "Geo permissions, then try again.")
+        elif exc.code == 21219 or "verified" in str(exc.msg).lower():
+            hint = " On a trial, Twilio can only call phone numbers you've verified."
+        raise SetupError(f"Twilio couldn't place the call: {exc.msg}.{hint}") from exc
+    return to
+
+
 # ---------------------------------------------------------------- Telegram
 
 
