@@ -2,7 +2,7 @@
 
 Call flow:
   Twilio  -> POST /voice/incoming   greet the caller and listen
-  Twilio  -> POST /voice/respond    caller spoke: Claude replies, listen again (repeat)
+  Twilio  -> POST /voice/respond    caller spoke: the AI replies, listen again (repeat)
   Twilio  -> POST /voice/status     call ended: summarize and notify you
   You     -> GET  /calls            call log dashboard (password protected)
 """
@@ -14,14 +14,13 @@ import html
 import logging
 import secrets
 
-import anthropic
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from twilio.request_validator import RequestValidator
 from twilio.twiml.voice_response import VoiceResponse
 
-from .brain import Brain, ClaudeBrain, Conversation
+from .brain import Brain, Conversation, make_brain
 from .config import Settings
 from .notify import Notifier
 from .store import CallStore
@@ -38,7 +37,7 @@ def create_app(
     store: CallStore | None = None,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
-    brain = brain or ClaudeBrain(settings)
+    brain = brain or make_brain(settings)
     notifier = notifier or Notifier(settings)
     store = store or CallStore(settings.database_path)
     validator = RequestValidator(settings.twilio_auth_token) if settings.twilio_auth_token else None
@@ -74,7 +73,10 @@ def create_app(
         return Response(content=str(vr), media_type="application/xml")
 
     def say(target, text: str) -> None:
-        target.say(text, voice=settings.tts_voice, language=settings.call_language)
+        if settings.tts_voice.lower() in {"man", "woman", "alice"}:
+            target.say(text, voice=settings.tts_voice, language=settings.call_language)
+        else:  # Polly/Google voices already speak one language; don't risk a mismatch
+            target.say(text, voice=settings.tts_voice)
 
     def say_and_listen(text: str) -> Response:
         vr = VoiceResponse()
@@ -116,7 +118,7 @@ def create_app(
     # ---------- Twilio webhooks ----------
 
     @app.post("/voice/incoming")
-    async def incoming(request: Request) -> Response:
+    async def incoming(request: Request, background: BackgroundTasks) -> Response:
         form = await twilio_form(request)
         sid = form.get("CallSid", "")
         caller = form.get("From", "")
@@ -125,6 +127,9 @@ def create_app(
         greeting = brain.greeting()
         store.add_line(sid, "agent", greeting)
         log.info("Incoming call %s from %s", sid, caller)
+        warm_up = getattr(brain, "warm_up", None)
+        if warm_up is not None:
+            background.add_task(warm_up)  # loads a local model while the greeting plays
         return say_and_listen(greeting)
 
     @app.post("/voice/respond")
@@ -146,10 +151,10 @@ def create_app(
                 brain.reply(live[sid], speech), timeout=settings.llm_timeout_seconds + 1
             )
         except asyncio.TimeoutError:
-            log.warning("Claude took too long on call %s", sid)
+            log.warning("The AI took too long to reply on call %s", sid)
             return say_and_listen("Sorry, I missed that. Could you say it again?")
-        except anthropic.APIError:
-            log.exception("Claude API error on call %s", sid)
+        except Exception:  # never drop the call because the AI failed
+            log.exception("The AI failed to reply on call %s", sid)
             return say_and_listen("Sorry, I'm having trouble hearing you. Could you repeat that?")
 
         store.add_line(sid, "agent", reply.text)
@@ -198,7 +203,11 @@ def create_app(
 
     @app.get("/health")
     async def health() -> dict:
-        return {"ok": True, "model": settings.claude_model, "notify": notifier.channels()}
+        return {
+            "ok": True,
+            "brain": getattr(brain, "label", type(brain).__name__),
+            "notify": notifier.channels(),
+        }
 
     return app
 

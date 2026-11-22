@@ -312,3 +312,172 @@ def test_claude_brain_summary_uses_structured_output(tmp_path):
 def test_no_summary_call_when_caller_said_nothing(tmp_path):
     brain = ClaudeBrain(make_settings(tmp_path), client=claude_with_responses([], []))
     assert asyncio.run(brain.summarize([{"role": "agent", "text": "Hi"}], "+1")) is None
+
+
+# ---------------------------------------------------------------- free brains (Groq / Ollama), mocked HTTP
+
+import httpx  # noqa: E402
+
+from app.brain import (  # noqa: E402
+    BrainError,
+    OpenAICompatibleBrain,
+    clean_for_speech,
+    make_brain,
+    parse_summary,
+)
+
+
+def chat_response(content: str) -> dict:
+    return {"choices": [{"index": 0, "message": {"role": "assistant", "content": content}}]}
+
+
+def free_brain(tmp_path, responses: list, seen: list, **overrides) -> OpenAICompatibleBrain:
+    """responses: dicts (200 JSON) or (status, json, headers) tuples, served in order."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append({"url": str(request.url), "headers": dict(request.headers),
+                     "body": json.loads(request.content)})
+        item = responses.pop(0)
+        if isinstance(item, tuple):
+            status, payload, headers = item
+            return httpx.Response(status, json=payload, headers=headers)
+        return httpx.Response(200, json=item)
+
+    overrides.setdefault("llm_api_key", "gsk_test")
+    settings = make_settings(tmp_path, **overrides)
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return OpenAICompatibleBrain(settings, http=http)
+
+
+def test_groq_brain_request_and_reply(tmp_path):
+    seen: list = []
+    brain = free_brain(
+        tmp_path,
+        [
+            chat_response("<think>caller gave a name</think>Thanks **Priya**! Anything else?"),
+            chat_response("I'll tell Sam. Goodbye! [END_CALL]"),
+        ],
+        seen,
+    )
+    convo = Conversation()
+    assert asyncio.run(brain.reply(convo, "It's Priya")) == Reply("Thanks Priya! Anything else?", False)
+    assert asyncio.run(brain.reply(convo, "No")) == Reply("I'll tell Sam. Goodbye!", True)
+
+    req = seen[1]
+    assert req["url"] == "https://api.groq.com/openai/v1/chat/completions"
+    assert req["headers"]["authorization"] == "Bearer gsk_test"
+    body = req["body"]
+    assert body["model"] == "openai/gpt-oss-120b"
+    assert body["reasoning_effort"] == "low"
+    assert body["max_completion_tokens"] == 1024
+    assert body["messages"][0]["role"] == "system" and "Sam" in body["messages"][0]["content"]
+    # The model's hidden reasoning is not sent back; its visible answer is.
+    assert body["messages"][2] == {"role": "assistant", "content": "Thanks **Priya**! Anything else?"}
+    assert [m["role"] for m in body["messages"]] == ["system", "user", "assistant", "user"]
+
+
+def test_ollama_brain_has_no_key_and_uses_local_url(tmp_path):
+    seen: list = []
+    brain = free_brain(tmp_path, [chat_response("Hello!")], seen,
+                       llm_provider="ollama", llm_api_key="")
+    asyncio.run(brain.reply(Conversation(), "hi"))
+    assert seen[0]["url"] == "http://localhost:11434/v1/chat/completions"
+    assert "authorization" not in seen[0]["headers"]
+    assert seen[0]["body"]["model"] == "llama3.2"
+    assert seen[0]["body"]["max_tokens"] == 1024
+    assert "reasoning_effort" not in seen[0]["body"]
+
+
+def test_free_brain_retries_once_on_short_rate_limit(tmp_path):
+    seen: list = []
+    brain = free_brain(
+        tmp_path,
+        [(429, {"error": "slow down"}, {"retry-after": "0"}), chat_response("Sure.")],
+        seen,
+    )
+    assert asyncio.run(brain.reply(Conversation(), "hi")).text == "Sure."
+    assert len(seen) == 2
+
+
+def test_free_brain_reports_bad_key(tmp_path):
+    brain = free_brain(tmp_path, [(401, {"error": "invalid key"}, {})], [])
+    with pytest.raises(BrainError) as err:
+        asyncio.run(brain.reply(Conversation(), "hi"))
+    assert err.value.status == 401
+
+
+def test_free_brain_empty_reply_asks_to_repeat(tmp_path):
+    convo = Conversation()
+    brain = free_brain(tmp_path, [chat_response("<think>hmm")], [])
+    reply = asyncio.run(brain.reply(convo, "hi"))
+    assert reply == Reply("Sorry, could you say that again?", False)
+    assert [m["role"] for m in convo.api_messages] == ["user"]
+
+
+def test_free_brain_summary_json_and_fallback_without_json_mode(tmp_path):
+    seen: list = []
+    summary_json = json.dumps({
+        "caller_name": "Priya", "reason": "Dinner", "urgency": "HIGH",
+        "callback_requested": True, "best_time_to_call_back": "After 7", "message": "Call her back.",
+    })
+    brain = free_brain(
+        tmp_path,
+        [(400, {"error": "response_format not supported"}, {}),
+         chat_response("Here you go:\n```json\n" + summary_json + "\n```")],
+        seen,
+    )
+    transcript = [{"role": "agent", "text": "Hi"}, {"role": "caller", "text": "It's Priya"}]
+    result = asyncio.run(brain.summarize(transcript, "+1555"))
+    assert result.caller_name == "Priya" and result.urgency == "high" and result.callback_requested
+    assert seen[0]["body"]["response_format"] == {"type": "json_object"}
+    assert "response_format" not in seen[1]["body"]
+    assert "Caller: It's Priya" in seen[1]["body"]["messages"][1]["content"]
+
+
+def test_parse_summary_is_forgiving_but_rejects_junk():
+    partial = parse_summary('{"caller_name": "Raj", "message": "Running late", "urgency": "very"}')
+    assert partial.caller_name == "Raj" and partial.urgency == "normal"
+    assert partial.best_time_to_call_back == "Not specified"
+    assert parse_summary("no json here") is None
+    assert parse_summary('{"caller_name": "Raj"}') is None  # nothing to tell the owner
+    assert parse_summary("[1, 2]") is None
+
+
+def test_clean_for_speech_strips_reasoning_and_markup():
+    assert clean_for_speech("<think>plan</think>**Hi** there [END_CALL]") == "Hi there"
+
+
+def test_make_brain_picks_provider(tmp_path):
+    assert make_brain(make_settings(tmp_path)).label == "groq:openai/gpt-oss-120b"
+    assert make_brain(make_settings(tmp_path, llm_provider="ollama", llm_model="qwen3")).label == "ollama:qwen3"
+    assert isinstance(make_brain(make_settings(tmp_path, llm_provider="claude")), ClaudeBrain)
+    with pytest.raises(ValueError):
+        make_brain(make_settings(tmp_path, llm_provider="nope"))
+    with pytest.raises(ValueError):
+        make_brain(make_settings(tmp_path, llm_provider="custom"))
+
+
+# ---------------------------------------------------------------- settings and TwiML details
+
+
+def test_empty_values_in_env_file_use_defaults(monkeypatch):
+    monkeypatch.setenv("OWNER_NAME", "")
+    monkeypatch.setenv("LLM_PROVIDER", "")
+    monkeypatch.setenv("GROQ_API_KEY", " gsk_abc ")
+    monkeypatch.setenv("TWILIO_PHONE_NUMBER", "+1 555-010-0000")
+    s = Settings.from_env()
+    assert s.owner_name == "the owner"
+    assert s.llm_provider == "groq" and s.llm_api_key == "gsk_abc"
+    assert s.twilio_phone_number == "+15550100000"
+
+
+def test_polly_voice_is_sent_without_language(setup):
+    client, *_ = setup()
+    r = client.post("/voice/incoming", data={"CallSid": "CA9", "From": "+1"})
+    assert '<Say voice="Polly.Joanna">' in r.text
+    assert 'language="en-US"' in r.text  # still used for speech recognition on <Gather>
+
+
+def test_health_shows_brain(setup):
+    client, *_ = setup()
+    assert client.get("/health").json()["ok"] is True
