@@ -48,17 +48,24 @@ class Notifier:
         return enabled
 
     def send(self, call: dict) -> None:
-        text = format_message(call)
+        self.send_text(format_message(call))
+
+    def send_text(self, text: str) -> dict[str, str | None]:
+        """Sends text to every configured channel. Returns {channel: error or None}."""
         senders = {"telegram": self._telegram, "email": self._email, "sms": self._sms}
         channels = self.channels()
         if not channels:
             log.info("No notification channel is configured. Summary:\n%s", text)
+        results: dict[str, str | None] = {}
         for name in channels:
             try:
                 senders[name](text)
                 log.info("Sent call summary by %s", name)
-            except Exception:  # one failing channel must not block the others
+                results[name] = None
+            except Exception as exc:  # one failing channel must not block the others
                 log.exception("Could not send call summary by %s", name)
+                results[name] = f"{exc.__class__.__name__}: {exc}"
+        return results
 
     def _telegram(self, text: str) -> None:
         resp = httpx.post(
@@ -66,7 +73,13 @@ class Notifier:
             json={"chat_id": self.s.telegram_chat_id, "text": text},
             timeout=15,
         )
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            # Not raise_for_status(): its message would include the URL, which holds the bot token.
+            try:
+                reason = resp.json().get("description", "")
+            except ValueError:
+                reason = ""
+            raise RuntimeError(f"Telegram returned HTTP {resp.status_code} {reason}".strip())
 
     def _email(self, text: str) -> None:
         msg = EmailMessage()

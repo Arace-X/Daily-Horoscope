@@ -30,6 +30,9 @@ Someone calls you ─► you don't answer ─► your carrier forwards the call 
 There's no phone service that lets software answer calls from anyone for free, so
 going live always costs a little. Everything up to that point is free.
 
+**Want Claude to do the setup for you?** Open Cowork in the Claude desktop app and follow
+[`COWORK_SETUP.md`](COWORK_SETUP.md). You only sign in and type verification codes yourself.
+
 ---
 
 ## Part 1: Talk to your agent in the terminal (free)
@@ -51,14 +54,11 @@ Download Python 3.12 or newer from <https://www.python.org/downloads/> and insta
 
 ### 4. Install the agent
 
-| Windows | Mac / Linux |
-|---|---|
-| `py -m venv .venv` | `python3 -m venv .venv` |
-| `.venv\Scripts\python -m pip install -r requirements.txt` | `.venv/bin/python -m pip install -r requirements.txt` |
-| `copy .env.example .env` | `cp .env.example .env` |
-| `notepad .env` | `open -e .env` |
+- **Windows:** double-click `install.bat` in the `voice-agent` folder.
+- **Mac / Linux:** in the terminal from step 3, run `sh install.sh`.
 
-The last line opens your settings file, `.env`. Keep it private: it will hold your keys.
+This installs what the agent needs and creates your settings file, `.env`. Open it with
+`notepad .env` (Windows) or `open -e .env` (Mac). Keep it private: it will hold your keys.
 
 ### 5. Get a free Groq key
 
@@ -86,62 +86,67 @@ To change what the agent knows about you, edit `agent_instructions.md` and run i
 2. In the Console, open **Phone Numbers → Manage → Buy a number** and pick one with **Voice**.
    It's paid from your free trial credit. US numbers are the easiest to get. Other countries
    may ask for documents.
-3. Copy your **Account SID**, **Auth Token** and the new number (like `+15551234567`) into `.env`.
+3. Copy your **Account SID** and **Auth Token** from the Console home page into `.env`
+   (`TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`). If your account has just one number, the agent
+   finds it by itself. Otherwise also set `TWILIO_PHONE_NUMBER` (like `+15551234567`).
 
 If you live outside the US, calling a US Twilio number from your phone may cost you
 international rates, so check your plan.
 
-### 2. Make your computer reachable with ngrok (free)
+### 2. Install ngrok (free, one time)
 
-1. Sign up at <https://ngrok.com>, then download and install ngrok.
-2. Run the "add authtoken" command from your ngrok dashboard (one time only).
-3. In a **second** terminal window, run `ngrok http 8000`.
-4. Copy the `https://….ngrok-free.app` address it shows into `.env` as `PUBLIC_BASE_URL`
-   (no `/` at the end).
+ngrok gives your computer a public https address so Twilio can reach the agent.
 
-On the free plan the address can change when you restart ngrok. Your ngrok dashboard
-may offer one free permanent domain. If it does, use it so the address stays the same.
+1. Sign up at <https://dashboard.ngrok.com/signup>.
+2. Install it. Windows: `winget install ngrok.ngrok`. Mac: `brew install ngrok`. Or download it
+   from <https://ngrok.com/download> (on Windows you can put `ngrok.exe` in the `voice-agent` folder).
+3. Connect your account: `ngrok config add-authtoken <your token>`, using the token from
+   <https://dashboard.ngrok.com/get-started/your-authtoken>.
 
-### 3. Start the agent
+### 3. Start everything with one command
 
-| Windows | Mac / Linux |
-|---|---|
-| `.venv\Scripts\python run.py` | `.venv/bin/python run.py` |
+- **Windows:** double-click `start.bat`.
+- **Mac / Linux:** run `sh start.command` (on a Mac you can also double-click it; the first time,
+  right-click it and choose **Open**).
 
-Leave this window and the ngrok window open.
+This runs `start.py`, which starts ngrok, saves the address in `.env`, points your Twilio number at the
+agent, and runs it. The ngrok address can change each time, and `start.py` handles that,
+so this is the only command you need from now on. Leave the window open.
 
-### 4. Connect your Twilio number
+To check that everything is connected, run `setup_helper.py check` in a second window
+(`.venv\Scripts\python setup_helper.py check` on Windows).
 
-In the Twilio Console, open **Phone Numbers → Manage → Active numbers → (your number)**.
-Under **Voice Configuration**, set:
-
-| Setting | Value |
-|---|---|
-| A call comes in | Webhook, `https://YOUR-NGROK-ADDRESS/voice/incoming`, HTTP POST |
-| Call status changes | `https://YOUR-NGROK-ADDRESS/voice/status`, HTTP POST |
-
-Save.
-
-### 5. Call it
+### 4. Call it
 
 Call your Twilio number from the phone you verified. You'll hear Twilio's trial message.
 Press any key, and your agent answers.
+
+<details><summary>Doing it by hand instead of start.py</summary>
+
+Run `ngrok http 8000` in one window and `run.py` in another. Copy ngrok's `https://…` address
+into `.env` as `PUBLIC_BASE_URL`. Then in the Twilio Console, open **Phone Numbers → Manage →
+Active numbers → (your number)**. Under **Voice Configuration**, set **A call comes in** to Webhook
+`https://YOUR-ADDRESS/voice/incoming` (HTTP POST), and **Call status changes** to
+`https://YOUR-ADDRESS/voice/status` (HTTP POST). `setup_helper.py connect-twilio` does the
+Twilio part for you.
+</details>
 
 ---
 
 ## Part 3: Get the summaries (free)
 
-Fill in either of these in `.env`, then restart `run.py`:
+**Telegram** (run these with `.venv\Scripts\python` on Windows, `.venv/bin/python` on Mac):
 
-- **Telegram:** in Telegram, message [@BotFather](https://t.me/BotFather), send `/newbot`, and
-  copy the token into `TELEGRAM_BOT_TOKEN`. Send your new bot any message, then open
-  `https://api.telegram.org/bot<TOKEN>/getUpdates` in a browser and copy the number after
-  `"chat":{"id":` into `TELEGRAM_CHAT_ID`.
-- **Email:** for Gmail, use `SMTP_HOST=smtp.gmail.com`, `SMTP_PORT=587`, your address as
-  `SMTP_USER` and `EMAIL_TO`, and an [App Password](https://myaccount.google.com/apppasswords)
-  as `SMTP_PASSWORD`.
+1. In Telegram, message [@BotFather](https://t.me/BotFather), send `/newbot`, pick a name, and copy the token.
+2. `setup_helper.py set TELEGRAM_BOT_TOKEN <the token>`
+3. Open your new bot in Telegram and send it any message.
+4. `setup_helper.py telegram-chat-id` finds your chat id and saves it.
+5. `setup_helper.py test-notify` sends you a test message.
+6. Restart `start.py` (Ctrl+C, then run it again).
 
-To check the setup, run `simulate.py --notify`. It sends the test summary to you.
+**Email:** for Gmail, set `SMTP_HOST=smtp.gmail.com`, `SMTP_PORT=587`, your address as
+`SMTP_USER` and `EMAIL_TO`, and an [App Password](https://myaccount.google.com/apppasswords)
+as `SMTP_PASSWORD`. Then run `setup_helper.py test-notify` and restart `start.py`.
 
 ---
 
@@ -164,10 +169,11 @@ Only do this if you want anyone to be able to reach the agent.
 
 ## Part 5: Keep it running
 
-The agent only answers while `run.py` and ngrok are running, so your computer must stay
-on and connected. For an always-on agent, move it to a small cloud server:
+The agent only answers while `start.py` is running, so your computer must stay on and
+connected. For an always-on agent, move it to a small cloud server:
 
-- Start command: `python run.py`, with `HOST=0.0.0.0` (and `PORT` if the host gives you one).
+- Start command: `python start.py --no-ngrok` (or `python run.py`), with `HOST=0.0.0.0`
+  (and `PORT` if the host gives you one).
 - Copy your `.env` values into the host's settings, set `PUBLIC_BASE_URL` to the server's
   https address, and update the two Twilio webhooks.
 - Hosts that put free apps to sleep when idle are too slow to wake up for a phone call.
@@ -210,7 +216,7 @@ for even faster replies, or `qwen3` on Ollama).
 
 | Problem | Fix |
 |---|---|
-| The call says "an application error has occurred" | Check the `run.py` window. Most often `PUBLIC_BASE_URL` doesn't exactly match the address in Twilio, so the request is rejected with a 403 |
+| The call says "an application error has occurred" | Check the agent's window. Most often the address changed: restart `start.py`, which reconnects ngrok and Twilio. Then run `setup_helper.py check` |
 | Twilio says the call can't be completed | On a trial, the calling number must be verified in Twilio (Phone Numbers → Verified Caller IDs) |
 | The agent says "Sorry, I missed that" a lot | The AI took too long. On Ollama, try a smaller model. On Groq, try `LLM_MODEL=openai/gpt-oss-20b` |
 | "You've hit the free tier's limit" | Groq's free limits reset after a minute or a day. Wait, or switch to Ollama |
@@ -232,5 +238,9 @@ The tests fake Twilio and the AI services, so they need no accounts or keys.
 | `app/notify.py` | Telegram, email and SMS |
 | `app/store.py` | SQLite call log |
 | `app/config.py` | Settings from `.env` |
-| `run.py` | Starts the server |
+| `app/setup_tools.py` | Setup automation used by the scripts below |
+| `start.py` | Starts ngrok, connects Twilio, runs the server |
+| `run.py` | Runs only the server |
+| `setup_helper.py` | `check`, `set`, `connect-twilio`, `telegram-chat-id`, `test-notify` |
 | `simulate.py` | Chat with the agent in your terminal |
+| `COWORK_SETUP.md` | Instructions for Claude in Cowork to do the setup for you |

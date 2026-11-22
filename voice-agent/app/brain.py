@@ -278,6 +278,12 @@ class OpenAICompatibleBrain:
         except (ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
             raise BrainError(f"Unexpected response from {self.provider}: {resp.text[:300]}") from exc
 
+    async def ping(self) -> None:
+        """Raises BrainError if the AI service can't be used (bad key, no model, offline)."""
+        await self._chat(
+            [{"role": "user", "content": "Reply with the word OK."}], max_tokens=50, timeout=60
+        )
+
     async def warm_up(self) -> None:
         """Ollama loads the model on first use, which can take several seconds. Do it early."""
         if self.provider != "ollama":
@@ -345,6 +351,10 @@ class ClaudeBrain:
 
     def greeting(self) -> str:
         return self._greeting
+
+    async def ping(self) -> None:
+        """Raises if the API key or model can't be used. Costs nothing."""
+        await self.client.models.retrieve(self.settings.claude_model)
 
     def _extra_args(self) -> dict:
         if self.settings.claude_model in FALLBACK_MODELS:

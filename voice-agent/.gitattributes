@@ -1,0 +1,4 @@
+# Windows scripts keep CRLF line endings; shell scripts keep LF.
+*.bat -text
+*.sh text eol=lf
+*.command text eol=lf
